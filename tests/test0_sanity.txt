@@ -1,0 +1,2 @@
+Value at address 0: 0xadded000
+Value at address 0xfffff: 0xdeadbeef
