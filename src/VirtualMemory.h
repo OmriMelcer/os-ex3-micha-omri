@@ -1,7 +1,6 @@
 #pragma once
 
 #include "MemoryConstants.h"
-
 /*
  * Initialize the virtual memory
  */
@@ -14,7 +13,7 @@ void VMinitialize();
  * returns 0 on failure (if the address cannot be mapped to a physical
  * address for any reason)
  */
-int VMread(uint64_t virtualAddress, word_t* value);
+int VMread(uint64_t virtualAddress, word_t *value);
 
 /* writes a word to the given virtual address
  *
