@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "lldb",
+      "request": "launch",
+      "args": [],
+      "cwd": "/Users/omri.m/personal/os-ex3-micha-omri/src",
+      "program": "/Users/omri.m/personal/os-ex3-micha-omri/src/build/Debug/outDebug"
+    }
+  ]
+}
