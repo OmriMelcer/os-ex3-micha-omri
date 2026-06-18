@@ -16,6 +16,24 @@ uint64_t extract_bits(uint64_t num, int start, int end)
   uint64_t mask= ((1ULL << (end - start + 1)) - 1) << start;
   return (num & mask) >> start;
 }
+int find_empty_table(word_t *frame_index, word_t cur_index)
+{
+  // 0 for success, 1 for failure
+  for (int i= 0; i < PAGE_SIZE; i++)
+  {
+    word_t res;
+    PMread(cur_index * PAGE_SIZE + i, &res);
+    if (res != 0)
+    {
+      int foo= find_empty_table(frame_index, res);
+      if (res == 0)
+      {
+        return 0;
+      }
+    }
+    return 1;
+  }
+}
 
 word_t page_fault_handler(uint64_t *virtualAddress, word_t prev_addr)
 {
@@ -23,7 +41,8 @@ word_t page_fault_handler(uint64_t *virtualAddress, word_t prev_addr)
   // etc.) This is a placeholder implementation and should be replaced with
   // actual logic. For example, you might want to allocate a new physical frame
   // and update the page table entry.
-  return 0;
+  word_t new_frame_index;
+  int res= find_empty_table(&new_frame_index, 0);
 }
 
 word_t down_the_rabit_hole(uint64_t virtualAdress)
