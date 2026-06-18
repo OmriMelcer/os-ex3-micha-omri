@@ -2,13 +2,15 @@
 #include "VirtualMemory.h"
 #include "PhysicalMemory.h"
 
-void VMinitialize()
+void clean_frame(word_t frame)
 {
   for (uint64_t i= 0; i < PAGE_SIZE; i++)
   {
-    PMwrite(i, 0);
+    PMwrite(frame * PAGE_SIZE + i, 0);
   }
 }
+
+void VMinitialize() { clean_frame(0); }
 
 uint64_t extract_bits(uint64_t num, int start, int end)
 {
@@ -19,30 +21,59 @@ uint64_t extract_bits(uint64_t num, int start, int end)
 int find_empty_table(word_t *frame_index, word_t cur_index)
 {
   // 0 for success, 1 for failure
+  int empty_lines= 0;
   for (int i= 0; i < PAGE_SIZE; i++)
   {
-    word_t res;
-    PMread(cur_index * PAGE_SIZE + i, &res);
-    if (res != 0)
+    word_t current_memory_context;
+    PMread(cur_index * PAGE_SIZE + i, &current_memory_context);
+    if (current_memory_context != 0)
     {
-      int foo= find_empty_table(frame_index, res);
+      int res= find_empty_table(frame_index, current_memory_context);
       if (res == 0)
       {
         return 0;
       }
     }
-    return 1;
+    else
+    {
+      empty_lines++;
+    }
   }
+
+  if (empty_lines == PAGE_SIZE)
+  {
+    if (cur_index == 0)
+    {
+      // this is the route table, and cannot be allocated.
+      // this means that the complete memory is clean.
+      // In this case we will provide 1
+      *frame_index= 1;
+      return 0;
+    }
+    *frame_index= cur_index;
+    return 0;
+  }
+  return 1;
 }
 
-word_t page_fault_handler(uint64_t *virtualAddress, word_t prev_addr)
+void page_fault_handler(uint64_t *virtualAddress, word_t prev_addr)
 {
   // Handle page fault (e.g., allocate a new physical frame, update page tables,
   // etc.) This is a placeholder implementation and should be replaced with
   // actual logic. For example, you might want to allocate a new physical frame
   // and update the page table entry.
+  // input - page. the actual pm memory of the father table. the page that we
+  // want to allocate for it.
+  // returns the frame_number.
   word_t new_frame_index;
   int res= find_empty_table(&new_frame_index, 0);
+  if (res == 0)
+  {
+    // found an empty table
+    PMwrite(prev_addr, new_frame_index);
+    clean_frame(new_frame_index);
+    return;
+  }
 }
 
 word_t down_the_rabit_hole(uint64_t virtualAdress)
