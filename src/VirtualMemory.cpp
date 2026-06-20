@@ -142,13 +142,12 @@ void restore_leaf(word_t frame_to_evict, word_t prev_addr,
                   uint64_t evicted_page_index, uint64_t page_swapped_in)
 {
   PMevict(frame_to_evict, evicted_page_index);
-  PMwrite(prev_addr, 0);
   PMrestore(frame_to_evict, page_swapped_in);
   PMwrite(prev_addr, frame_to_evict);
 }
 
-void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
-                        bool is_leaf)
+word_t page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
+                          bool is_leaf)
 {
   // Handle page fault (e.g., allocate a new physical frame, update page
   // tables, etc.) This is a placeholder implementation and should be replaced
@@ -158,9 +157,8 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   // the frame_number.
   word_t new_frame_index;
   word_t found_parent_entry= (word_t)-1;
-  int res= find_empty_table_or_free_frame(new_frame_index, 0, 0,
-                                          prev_addr / PAGE_SIZE, 0,
-                                          found_parent_entry);
+  int res= find_empty_table_or_free_frame(
+      new_frame_index, 0, 0, prev_addr / PAGE_SIZE, 0, found_parent_entry);
   if (res == 0)
   {
     // The reused frame may be an empty table that is still referenced by its
@@ -179,7 +177,7 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
       PMrestore(new_frame_index, virtualAddress >> OFFSET_WIDTH);
       PMwrite(prev_addr, new_frame_index);
     }
-    return;
+    return new_frame_index;
   }
   if (res != -1)
   {
@@ -191,10 +189,8 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
     {
       PMrestore(res + 1, virtualAddress >> OFFSET_WIDTH);
       PMwrite(prev_addr, res + 1);
-      // restore_leaf(res + 1, prev_addr, virtualAddress >> OFFSET_WIDTH,
-      //  virtualAddress >> OFFSET_WIDTH);
     }
-    return;
+    return res + 1;
   }
   // no free frame, must evict.
   uint64_t page_swapped_in= virtualAddress >> OFFSET_WIDTH;
@@ -203,7 +199,8 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   uint64_t evicted_page_index;
   uint64_t evicted_page_father;
   find_frame_to_evict(page_swapped_in, 0, 0, 0, 0, frame_to_evict,
-                      best_diff_so_far, evicted_page_index, evicted_page_father);
+                      best_diff_so_far, evicted_page_index,
+                      evicted_page_father);
   // remove the victim's reference from its parent table before reusing it
   PMwrite(evicted_page_father, 0);
   if (!is_leaf)
@@ -216,6 +213,7 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
     restore_leaf(frame_to_evict, prev_addr, evicted_page_index,
                  page_swapped_in);
   }
+  return frame_to_evict;
 }
 
 word_t down_the_rabit_hole(uint64_t virtualAdress, bool use_page_fault_handler)
@@ -235,8 +233,7 @@ word_t down_the_rabit_hole(uint64_t virtualAdress, bool use_page_fault_handler)
       {
         return 0;
       }
-      page_fault_handler(virtualAdress, prev_addr, false);
-      PMread(prev_addr, &next_addr);
+      next_addr= page_fault_handler(virtualAdress, prev_addr, false);
     }
     uint64_t page_index= extract_bits(virtualAdress, i * OFFSET_WIDTH,
                                       (i + 1) * OFFSET_WIDTH - 1);
@@ -251,8 +248,7 @@ word_t down_the_rabit_hole(uint64_t virtualAdress, bool use_page_fault_handler)
     {
       return 0;
     }
-    page_fault_handler(virtualAdress, prev_addr, true);
-    PMread(prev_addr, &next_addr);
+    next_addr= page_fault_handler(virtualAdress, prev_addr, true);
   }
   return next_addr;
 }
@@ -267,7 +263,7 @@ int VMread(uint64_t virtualAddress, word_t *value)
    * readable from disk even untouched. fault handler.
    *  */
 
-  if (virtualAddress >= VIRTUAL_MEMORY_SIZE)
+  if (virtualAddress >= VIRTUAL_MEMORY_SIZE || value == nullptr)
   {
     return 0;
   }
