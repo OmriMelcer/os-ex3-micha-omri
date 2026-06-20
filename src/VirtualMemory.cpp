@@ -20,11 +20,15 @@ uint64_t extract_bits(uint64_t num, int start, int end)
   return (num & mask) >> start;
 }
 int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
-                                   int depth, word_t protected_frame)
+                                   int depth, word_t protected_frame,
+                                   word_t parent_entry_addr,
+                                   word_t &found_parent_entry)
 {
   // -1 for all full.
-  // 0 for found empty table.
-  // return value of the biggest frame
+  // 0 for found empty table (frame_index = frame to reuse,
+  //    found_parent_entry = address of its OLD parent entry to clear, or
+  //    (word_t)-1 for the cold-start root case which has no parent).
+  // otherwise: the biggest frame index seen in this subtree.
   int empty_lines= 0;
   if (depth == TABLES_DEPTH)
   {
@@ -39,7 +43,8 @@ int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
     {
 
       int res= find_empty_table_or_free_frame(
-          frame_index, current_memory_context, depth + 1, protected_frame);
+          frame_index, current_memory_context, depth + 1, protected_frame,
+          cur_index * PAGE_SIZE + i, found_parent_entry);
       if (res == 0)
       {
         return 0;
@@ -70,18 +75,22 @@ int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
       // this means that the complete memory is clean.
       // In this case we will provide 1
       frame_index= 1;
+      found_parent_entry= (word_t)-1; // cold start: frame 1 has no parent yet
       return 0;
     }
     if (cur_index != protected_frame)
     {
       frame_index= cur_index;
+      found_parent_entry= parent_entry_addr; // clear this before repurposing
       return 0;
     }
     return cur_index;
   }
-  if (largest_frame_so_far + 1 >= NUM_FRAMES)
+  if (depth == 0 && largest_frame_so_far + 1 >= NUM_FRAMES)
   {
     // this means that the complete memory is full.
+    // Only the top-level call may declare "full": a recursive call must report
+    // its subtree's true largest frame, otherwise the parent discards it.
     return -1;
   }
   return largest_frame_so_far;
@@ -148,10 +157,19 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   // of the father table. the page that we want to allocate for it. returns
   // the frame_number.
   word_t new_frame_index;
+  word_t found_parent_entry= (word_t)-1;
   int res= find_empty_table_or_free_frame(new_frame_index, 0, 0,
-                                          prev_addr / PAGE_SIZE);
+                                          prev_addr / PAGE_SIZE, 0,
+                                          found_parent_entry);
   if (res == 0)
   {
+    // The reused frame may be an empty table that is still referenced by its
+    // old parent entry. Clear that reference before repurposing the frame,
+    // otherwise the frame ends up with two parents and the tree is corrupted.
+    if (found_parent_entry != (word_t)-1)
+    {
+      PMwrite(found_parent_entry, 0);
+    }
     if (!is_leaf)
     {
       insert_table(prev_addr, new_frame_index);
