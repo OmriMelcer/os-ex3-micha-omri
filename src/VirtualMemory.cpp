@@ -20,15 +20,14 @@ uint64_t extract_bits(uint64_t num, int start, int end)
   return (num & mask) >> start;
 }
 int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
-                                   int depth)
+                                   int depth, word_t protected_frame)
 {
   // -1 for all full.
   // 0 for found empty table.
   // return value of the biggest frame
   int empty_lines= 0;
-  if (depth == TABLES_DEPTH - 1) // is it -1? or should it be Table_DEPTH
+  if (depth == TABLES_DEPTH)
   {
-    // true leaf.
     return cur_index;
   }
   int largest_frame_so_far= 0;
@@ -40,7 +39,7 @@ int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
     {
 
       int res= find_empty_table_or_free_frame(
-          frame_index, current_memory_context, depth + 1);
+          frame_index, current_memory_context, depth + 1, protected_frame);
       if (res == 0)
       {
         return 0;
@@ -73,10 +72,14 @@ int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
       frame_index= 1;
       return 0;
     }
-    frame_index= cur_index;
-    return 0;
+    if (cur_index != protected_frame)
+    {
+      frame_index= cur_index;
+      return 0;
+    }
+    return cur_index;
   }
-  if (largest_frame_so_far >= NUM_FRAMES)
+  if (largest_frame_so_far + 1 >= NUM_FRAMES)
   {
     // this means that the complete memory is full.
     return -1;
@@ -91,14 +94,15 @@ void find_frame_to_evict(uint64_t page_swapped_in, int depth, word_t cur_index,
   if (depth == TABLES_DEPTH)
   {
     // cur index is a frame.
-    uint64_t diff= page_swapped_in - cur_index;
-    uint64_t cyclic_diff= std::min(diff, (uint64_t)NUM_FRAMES - diff);
-    if (cyclic_diff > best_diff_so_far)
+    uint64_t diff= std::abs((int64_t)(page_swapped_in - cur_page_index));
+    uint64_t cyclic_diff= std::min(diff, (uint64_t)NUM_PAGES - diff);
+    if (best_diff_so_far == -1 || cyclic_diff > best_diff_so_far)
     {
       best_diff_so_far= cyclic_diff;
       best_frame_to_evict= cur_index;
       evicted_page_index= cur_page_index;
     }
+    return;
   }
 
   for (int i= 0; i < PAGE_SIZE; i++)
@@ -139,31 +143,35 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   // of the father table. the page that we want to allocate for it. returns
   // the frame_number.
   word_t new_frame_index;
-  int res= find_empty_table_or_free_frame(new_frame_index, 0, 0);
+  int res= find_empty_table_or_free_frame(new_frame_index, 0, 0,
+                                          prev_addr / PAGE_SIZE);
   if (res == 0)
   {
-    if (is_leaf)
+    if (!is_leaf)
     {
       insert_table(prev_addr, new_frame_index);
     }
     else
-    {
-      restore_leaf(new_frame_index, prev_addr, virtualAddress >> OFFSET_WIDTH,
-                   virtualAddress >> OFFSET_WIDTH);
+    { // it's clear so nothing to evict
+      PMrestore(new_frame_index, virtualAddress >> OFFSET_WIDTH);
+      PMwrite(prev_addr, new_frame_index);
     }
     return;
   }
   if (res != -1)
   {
-    if (is_leaf)
+    if (!is_leaf)
     {
       insert_table(prev_addr, res + 1);
     }
     else
     {
-      restore_leaf(res + 1, prev_addr, virtualAddress >> OFFSET_WIDTH,
-                   virtualAddress >> OFFSET_WIDTH);
+      PMrestore(res + 1, virtualAddress >> OFFSET_WIDTH);
+      PMwrite(prev_addr, res + 1);
+      // restore_leaf(res + 1, prev_addr, virtualAddress >> OFFSET_WIDTH,
+      //  virtualAddress >> OFFSET_WIDTH);
     }
+    return;
   }
   // no free frame, must evict.
   uint64_t page_swapped_in= virtualAddress >> OFFSET_WIDTH;
@@ -172,7 +180,7 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   uint64_t evicted_page_index;
   find_frame_to_evict(page_swapped_in, 0, 0, 0, frame_to_evict,
                       best_diff_so_far, evicted_page_index);
-  if (is_leaf)
+  if (!is_leaf)
   {
     PMevict(frame_to_evict, evicted_page_index);
     PMwrite(prev_addr, 0);
@@ -185,29 +193,42 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   }
 }
 
-word_t down_the_rabit_hole(uint64_t virtualAdress)
+word_t down_the_rabit_hole(uint64_t virtualAdress, bool use_page_fault_handler)
 {
 
   int start_of_first_adress= TABLES_DEPTH * OFFSET_WIDTH;
   uint64_t first_page_index= extract_bits(virtualAdress, start_of_first_adress,
                                           VIRTUAL_ADDRESS_WIDTH - 1);
-  word_t next_addr, tmp, prev_addr;
+  word_t next_addr, tmp, prev_addr= first_page_index;
   PMread(first_page_index, &tmp);
   next_addr= tmp;
-  for (int i= 1; i < TABLES_DEPTH - 1; i++)
+  for (int i= TABLES_DEPTH - 1; i != 0; i--)
   {
     if (next_addr == 0)
     {
+      if (!use_page_fault_handler)
+      {
+        return 0;
+      }
       page_fault_handler(virtualAdress, prev_addr, false);
+      PMread(prev_addr, &next_addr);
     }
-    uint64_t page_index=
-        extract_bits(virtualAdress, OFFSET_WIDTH + i * OFFSET_WIDTH,
-                     OFFSET_WIDTH + (i + 1) * OFFSET_WIDTH - 1);
+    uint64_t page_index= extract_bits(virtualAdress, i * OFFSET_WIDTH,
+                                      (i + 1) * OFFSET_WIDTH - 1);
     PMread(next_addr * PAGE_SIZE + page_index, &tmp);
     prev_addr= next_addr * PAGE_SIZE + page_index;
     next_addr= tmp;
   }
-  // final stop is the actual phrame of the certain page(given that it exists)
+  // final stop is the actual frame of the certain page(given that it exists)
+  if (next_addr == 0)
+  {
+    if (!use_page_fault_handler)
+    {
+      return 0;
+    }
+    page_fault_handler(virtualAdress, prev_addr, true);
+    PMread(prev_addr, &next_addr);
+  }
   return next_addr;
 }
 
@@ -221,26 +242,29 @@ int VMread(uint64_t virtualAddress, word_t *value)
    * readable from disk even untouched. fault handler.
    *  */
 
-  if (virtualAddress < 0 || virtualAddress >= VIRTUAL_MEMORY_SIZE)
+  if (virtualAddress >= VIRTUAL_MEMORY_SIZE)
   {
-    return 1;
+    return 0;
   }
-  PMread(down_the_rabit_hole(virtualAddress) * PAGE_SIZE +
+  PMread(down_the_rabit_hole(virtualAddress, true) * PAGE_SIZE +
              extract_bits(virtualAddress, 0, OFFSET_WIDTH - 1),
          value);
-  return 0;
+  return 1;
 }
 
 int VMwrite(uint64_t virtualAddress, word_t value)
 {
-  if (virtualAddress < 0 || virtualAddress >= VIRTUAL_MEMORY_SIZE)
+  if (virtualAddress >= VIRTUAL_MEMORY_SIZE)
   {
-    return 1;
+    return 0;
   }
-  PMwrite(down_the_rabit_hole(virtualAddress) * PAGE_SIZE +
+  PMwrite(down_the_rabit_hole(virtualAddress, true) * PAGE_SIZE +
               extract_bits(virtualAddress, 0, OFFSET_WIDTH - 1),
           value);
-  return 0;
+  return 1;
 }
 
-uint64_t VMgetMapping(uint64_t virtualPage);
+uint64_t VMgetMapping(uint64_t virtualPage)
+{
+  return down_the_rabit_hole(virtualPage, false);
+}
