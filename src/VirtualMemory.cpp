@@ -87,9 +87,11 @@ int find_empty_table_or_free_frame(word_t &frame_index, word_t cur_index,
   return largest_frame_so_far;
 }
 void find_frame_to_evict(uint64_t page_swapped_in, int depth, word_t cur_index,
-                         uint64_t cur_page_index, word_t &best_frame_to_evict,
+                         uint64_t cur_page_index, uint64_t prev_page_index,
+                         word_t &best_frame_to_evict,
                          uint64_t &best_diff_so_far,
-                         uint64_t &evicted_page_index)
+                         uint64_t &evicted_page_index,
+                         uint64_t &evicted_page_father)
 {
   if (depth == TABLES_DEPTH)
   {
@@ -101,6 +103,7 @@ void find_frame_to_evict(uint64_t page_swapped_in, int depth, word_t cur_index,
       best_diff_so_far= cyclic_diff;
       best_frame_to_evict= cur_index;
       evicted_page_index= cur_page_index;
+      evicted_page_father= prev_page_index;
     }
     return;
   }
@@ -112,10 +115,12 @@ void find_frame_to_evict(uint64_t page_swapped_in, int depth, word_t cur_index,
     uint64_t next_page_index= (cur_page_index << OFFSET_WIDTH) | i;
     if (current_memory_context != 0)
     {
-      word_t down_tree_best_frame_to_evict;
+      // prev_page_index carries the PHYSICAL ADDRESS of the entry pointing to
+      // the child, so the leaf can report its parent entry for clearing.
       find_frame_to_evict(page_swapped_in, depth + 1, current_memory_context,
-                          next_page_index, best_frame_to_evict,
-                          best_diff_so_far, evicted_page_index);
+                          next_page_index, cur_index * PAGE_SIZE + i,
+                          best_frame_to_evict, best_diff_so_far,
+                          evicted_page_index, evicted_page_father);
     }
   }
 }
@@ -178,12 +183,14 @@ void page_fault_handler(uint64_t &virtualAddress, word_t prev_addr,
   word_t frame_to_evict;
   uint64_t best_diff_so_far= -1;
   uint64_t evicted_page_index;
-  find_frame_to_evict(page_swapped_in, 0, 0, 0, frame_to_evict,
-                      best_diff_so_far, evicted_page_index);
+  uint64_t evicted_page_father;
+  find_frame_to_evict(page_swapped_in, 0, 0, 0, 0, frame_to_evict,
+                      best_diff_so_far, evicted_page_index, evicted_page_father);
+  // remove the victim's reference from its parent table before reusing it
+  PMwrite(evicted_page_father, 0);
   if (!is_leaf)
   {
     PMevict(frame_to_evict, evicted_page_index);
-    PMwrite(prev_addr, 0);
     insert_table(prev_addr, frame_to_evict);
   }
   else
@@ -266,5 +273,5 @@ int VMwrite(uint64_t virtualAddress, word_t value)
 
 uint64_t VMgetMapping(uint64_t virtualPage)
 {
-  return down_the_rabit_hole(virtualPage, false);
+  return down_the_rabit_hole((virtualPage << OFFSET_WIDTH), false);
 }
